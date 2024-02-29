@@ -19,3 +19,5 @@ pub mod cli;
 pub mod config;
 /// Core logic
 pub mod core;
+/// Executor for cli module
+pub mod executor;

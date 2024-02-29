@@ -23,8 +23,10 @@ pub struct Config {
     cache_dir: Option<PathBuf>,
     /// Log directory
     log_dir: Option<PathBuf>,
-    /// Mega server URL
-    mega_url: Option<String>,
+    /// Mega server Host
+    mega_host: Option<String>,
+    /// Mega server Port
+    mega_port: Option<u16>,
 }
 
 impl From<Args> for Config {
@@ -33,7 +35,8 @@ impl From<Args> for Config {
             mount_point: args.mount_point,
             cache_dir: args.cache_dir,
             log_dir: args.log_dir,
-            mega_url: args.mega_url,
+            mega_host: args.mega_host,
+            mega_port: args.mega_port,
         }
     }
 }

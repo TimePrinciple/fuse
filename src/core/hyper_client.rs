@@ -7,15 +7,21 @@ use hyper::{client::conn::http1::SendRequest, Request};
 use hyper_util::rt::TokioIo;
 use tokio::{net::TcpStream, runtime::Runtime};
 
+/// MegaClient is used to handling connection details.
+/// Adapting the remote server's asynchronous nature, this client is also
+/// implemented in an asynchronous manner. But an async client in a synchronous
+/// context. This is achieved by constructing an async *tokio runtime* within.
 #[derive(Debug)]
-struct MegaClient {
+pub struct MegaClient {
     rt: Arc<Runtime>,
     sender: SendRequest<Empty<Bytes>>,
 }
 
 impl MegaClient {
-    /// connect
-    fn from(rt: Arc<Runtime>) -> Result<MegaClient> {
+    /// Creates a MegaClient from a given runtime. The reason it exists instead
+    /// of providing a default `Runtime` is to enable customization on
+    /// `Runtime`, like tunning the number of worker_threads or else.
+    pub fn from(rt: Arc<Runtime>) -> Result<MegaClient> {
         let host = "localhost";
         let port = "8000";
         let addr = format!("{}:{}", host, port);
@@ -37,6 +43,8 @@ impl MegaClient {
         Ok(MegaClient { rt, sender })
     }
 
+    /// Send a `Request` to the server pointed by this MegaClient, retrieve the
+    /// content in response to comprise a `String`.
     fn request(&mut self, req: Request<Empty<Bytes>>) -> Result<String> {
         let mut response = self.rt.block_on(self.sender.send_request(req))?;
 
