@@ -5,7 +5,9 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Empty};
 use hyper::{client::conn::http1::SendRequest, Request};
 use hyper_util::rt::TokioIo;
-use tokio::{net::TcpStream, runtime::Runtime};
+use tokio::{net::TcpStream, runtime, runtime::Runtime};
+
+use crate::config::ValidatedConfig;
 
 /// MegaClient is used to handling connection details.
 /// Adapting the remote server's asynchronous nature, this client is also
@@ -18,13 +20,16 @@ pub struct MegaClient {
 }
 
 impl MegaClient {
-    /// Creates a MegaClient from a given runtime. The reason it exists instead
-    /// of providing a default `Runtime` is to enable customization on
-    /// `Runtime`, like tunning the number of worker_threads or else.
-    pub fn from(rt: Arc<Runtime>) -> Result<MegaClient> {
-        let host = "localhost";
-        let port = "8000";
-        let addr = format!("{}:{}", host, port);
+    /// Creates a MegaClient from a default runtime.
+    pub fn from_default_runtime(config: &ValidatedConfig) -> Result<MegaClient> {
+        let rt = runtime::Builder::new_multi_thread()
+            .worker_threads(10)
+            .enable_all()
+            .build()
+            .unwrap();
+        let rt = Arc::new(rt);
+
+        let addr = &config.server_url;
         let stream = rt.block_on(TcpStream::connect(addr))?;
         let io = TokioIo::new(stream);
 
@@ -38,8 +43,29 @@ impl MegaClient {
                 println!("Connection failed: {:?}", err);
             }
         });
-        dbg!(&rt);
-        dbg!(&sender);
+        Ok(MegaClient { rt, sender })
+    }
+    /// Creates a MegaClient from a given runtime. The reason it exists instead
+    /// of providing a default `Runtime` is to enable customization on
+    /// `Runtime`, like tunning the number of worker_threads or else.
+    pub fn from_customized_runtime(
+        rt: Arc<Runtime>,
+        config: &ValidatedConfig,
+    ) -> Result<MegaClient> {
+        let addr = &config.server_url;
+        let stream = rt.block_on(TcpStream::connect(addr))?;
+        let io = TokioIo::new(stream);
+
+        let (sender, conn) = rt.block_on(hyper::client::conn::http1::handshake::<
+            TokioIo<tokio::net::TcpStream>,
+            Empty<Bytes>,
+        >(io))?;
+
+        rt.spawn(async move {
+            if let Err(err) = conn.await {
+                println!("Connection failed: {:?}", err);
+            }
+        });
         Ok(MegaClient { rt, sender })
     }
 
@@ -67,7 +93,7 @@ impl MegaClient {
 
 #[cfg(test)]
 mod tests {
-    use tokio::runtime;
+    use std::path::PathBuf;
 
     use super::*;
 
@@ -78,7 +104,17 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        assert!(MegaClient::from(Arc::new(rt)).is_ok());
+        let config = create_sample_config();
+        assert!(MegaClient::from_customized_runtime(Arc::new(rt), &config).is_ok());
+    }
+
+    fn create_sample_config() -> ValidatedConfig {
+        ValidatedConfig {
+            mount_point: PathBuf::from("/tmp"),
+            cache_dir: PathBuf::from("/tmp"),
+            log_dir: PathBuf::from("/tmp"),
+            server_url: String::from("localhost:8000"),
+        }
     }
 
     fn create_mega_client() -> MegaClient {
@@ -87,7 +123,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        MegaClient::from(Arc::new(rt)).unwrap()
+        let config = create_sample_config();
+        MegaClient::from_customized_runtime(Arc::new(rt), &config).unwrap()
     }
 
     fn form_request_to(target: &str) -> Request<Empty<Bytes>> {

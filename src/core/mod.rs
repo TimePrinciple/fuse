@@ -1,55 +1,39 @@
+mod inode;
 /// MegaClient used to dial and communicate with remote mega server
 pub mod mega_client;
 mod request;
 mod response;
 
-use std::time::{Duration, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    time::{Duration, UNIX_EPOCH},
+};
 
-use fuser::{FileAttr, FileType};
+use fuser::{FileAttr, FileType, FUSE_ROOT_ID};
 use libc::{ENOENT, ENONET};
 use tracing::info;
 
-// const TTL: Duration = Duration::from_secs(1);
-// const SAMPLE_DIR_ATTR: FileAttr = FileAttr {
-//     ino: 1,
-//     size: 0,
-//     blocks: 0,
-//     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
-//     mtime: UNIX_EPOCH,
-//     ctime: UNIX_EPOCH,
-//     crtime: UNIX_EPOCH,
-//     kind: FileType::Directory,
-//     perm: 0o755,
-//     nlink: 2,
-//     uid: 501,
-//     gid: 20,
-//     rdev: 0,
-//     flags: 0,
-//     blksize: 512,
-// };
-// const SAMPLE_FILE_CONTENT: &str = "This is a sample file from fuser rust\n";
-// const SAMPLE_FILE_ATTR: FileAttr = FileAttr {
-//     ino: 2,
-//     size: 38,
-//     blocks: 1,
-//     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
-//     mtime: UNIX_EPOCH,
-//     ctime: UNIX_EPOCH,
-//     crtime: UNIX_EPOCH,
-//     kind: FileType::RegularFile,
-//     perm: 0o644,
-//     nlink: 1,
-//     uid: 501,
-//     gid: 20,
-//     rdev: 0,
-//     flags: 0,
-//     blksize: 512,
-// };
+use crate::core::mega_client::MegaClient;
 
 /// Actually FUSE implementation
-pub struct FS;
+pub struct MegaFUSE {
+    mega_client: MegaClient,
+    // inodes: HashMap<usize, Inode>,
+}
 
-impl fuser::Filesystem for FS {
+impl fuser::Filesystem for MegaFUSE {
+    fn init(
+        &mut self,
+        _req: &fuser::Request<'_>,
+        _config: &mut fuser::KernelConfig,
+    ) -> Result<(), libc::c_int> {
+        // Retrieve the basic `Tree` from the specified remote repository,
+        // recursively initialize the directory
+
+        // Request repo with `repo_name` specified to get the basic layout
+        Ok(())
+    }
     // fn getattr(&mut self, _req: &fuser::Request<'_>, ino: u64, reply:
     // fuser::ReplyAttr) {     info!("[getattr] called with ino: {}", ino);
     //     match ino {

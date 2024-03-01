@@ -39,7 +39,21 @@ impl Executor {
         // The `ValidatedConfig::from()` method will use methods in `Config` to validate
         // all fields in `Config`
         let validated_config = config::ValidatedConfig::from(config);
+        info!(
+            "`Config` validated to `ValidatedConfig`: {:?}",
+            validated_config
+        );
 
         // Construct `MegaClient`
+        let mut mega_client = mega_client::MegaClient::from_default_runtime(&validated_config)
+            .expect("The MegaClient should be construct faultlessly with validated config");
+        // If construction went successfully, the remote is alive at least this
+        // moment, because the mega_client is running on a long held TcpStream
+        info!(
+            "MegaClient connection established to mage server at {}",
+            &validated_config.server_url
+        );
+
+        // Mount FS
     }
 }

@@ -6,11 +6,7 @@
 //! 3. `ValidatedConfig` is generated from `Config`, with all necessary fields
 //!    checked to be valid to get `core` to work.
 //! Configuration preparation before `core` starts.
-use std::{
-    convert::From,
-    fmt::format,
-    path::{Path, PathBuf},
-};
+use std::{convert::From, path::PathBuf};
 
 use anyhow::Result;
 
@@ -78,16 +74,17 @@ impl From<Args> for Config {
 }
 
 /// `ValidatedConfig` can only be generated from `Config`.
+#[derive(Debug)]
 pub struct ValidatedConfig {
     /// Mount point
-    mount_point: PathBuf,
+    pub mount_point: PathBuf,
     /// Cache directory: where the data pulled from remote actually resides
-    cache_dir: PathBuf,
+    pub cache_dir: PathBuf,
     /// Log directory
-    log_dir: PathBuf,
+    pub log_dir: PathBuf,
     /// Joined by Mega server URL and API version, must be dialed and then check
     /// its response to make sure the server's `object services` are ready
-    server_url: String,
+    pub server_url: String,
 }
 
 impl From<Config> for ValidatedConfig {
