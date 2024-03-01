@@ -1,4 +1,5 @@
-mod hyper_client;
+/// MegaClient used to dial and communicate with remote mega server
+pub mod mega_client;
 mod request;
 mod response;
 

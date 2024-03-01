@@ -6,7 +6,11 @@
 //! 3. `ValidatedConfig` is generated from `Config`, with all necessary fields
 //!    checked to be valid to get `core` to work.
 //! Configuration preparation before `core` starts.
-use std::{convert::From, path::PathBuf};
+use std::{
+    convert::From,
+    fmt::format,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 
@@ -18,7 +22,7 @@ use crate::cli::Args;
 #[derive(Debug)]
 pub struct Config {
     /// Mount point
-    pub mount_point: Option<PathBuf>,
+    mount_point: Option<PathBuf>,
     /// Cache directory: where the data pulled from remote actually resides
     cache_dir: Option<PathBuf>,
     /// Log directory
@@ -27,6 +31,38 @@ pub struct Config {
     mega_host: Option<String>,
     /// Mega server Port
     mega_port: Option<u16>,
+}
+
+impl Config {
+    fn validate_mount_point(&mut self) -> Result<PathBuf, ()> {
+        if self.mount_point.is_some() && self.mount_point.as_ref().unwrap().is_dir() {
+            Ok(self.mount_point.take().unwrap())
+        } else {
+            Err(())
+        }
+    }
+
+    fn validate_cache_dir(&mut self) -> Result<PathBuf, ()> {
+        if self.cache_dir.is_some() && self.cache_dir.as_ref().unwrap().is_dir() {
+            Ok(self.cache_dir.take().unwrap())
+        } else {
+            Err(())
+        }
+    }
+
+    fn validate_log_dir(&mut self) -> Result<PathBuf, ()> {
+        if self.log_dir.is_some() && self.log_dir.as_ref().unwrap().is_dir() {
+            Ok(self.log_dir.take().unwrap())
+        } else {
+            Err(())
+        }
+    }
+
+    fn validate_mega_url(&mut self) -> Result<String, ()> {
+        let host = self.mega_host.take().unwrap();
+        let port = self.mega_port.unwrap();
+        Ok(format!("{}:{}", host, port))
+    }
 }
 
 impl From<Args> for Config {
@@ -54,11 +90,14 @@ pub struct ValidatedConfig {
     server_url: String,
 }
 
-impl ValidatedConfig {
-    fn from_config(config: Config) {
-        // ValidatedConfig {}
-    }
-    fn is_valid(&self) -> bool {
-        self.mount_point.is_dir() && self.cache_dir.is_dir() && self.log_dir.is_dir()
+impl From<Config> for ValidatedConfig {
+    fn from(args: Config) -> Self {
+        let mut args = args;
+        ValidatedConfig {
+            mount_point: args.validate_mount_point().unwrap(),
+            cache_dir: args.validate_cache_dir().unwrap(),
+            log_dir: args.validate_log_dir().unwrap(),
+            server_url: args.validate_mega_url().unwrap(),
+        }
     }
 }

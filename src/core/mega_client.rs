@@ -45,7 +45,7 @@ impl MegaClient {
 
     /// Send a `Request` to the server pointed by this MegaClient, retrieve the
     /// content in response to comprise a `String`.
-    fn request(&mut self, req: Request<Empty<Bytes>>) -> Result<String> {
+    pub fn request(&mut self, req: Request<Empty<Bytes>>) -> Result<String> {
         let mut response = self.rt.block_on(self.sender.send_request(req))?;
 
         let output = self.rt.block_on(async {
