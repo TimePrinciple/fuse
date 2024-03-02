@@ -1,6 +1,12 @@
+use clap::Command;
+use fuser::{mount2, spawn_mount2, MountOption};
 use tracing::info;
 
-use crate::{cli::parse, config, core::mega_client};
+use crate::{
+    cli::{parse, Commands},
+    config,
+    core::{mega_client, MegaFUSE},
+};
 
 /// Executor contains the actual logic of `mega-fuse`
 /// The following steps are subjected to errors encountered, they will directly
@@ -21,7 +27,9 @@ impl Executor {
     /// Executor entrance
     pub fn start() {
         // Initialize tracing subscriber
-        tracing_subscriber::fmt().init();
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
         info!("Tracing subscriber initialized");
 
         // Parse command line arguments
@@ -29,7 +37,7 @@ impl Executor {
         info!("Command line arguments parsed: {:?}", cli);
 
         // Construct `Config` from `Args`
-        let config = config::Config::from(cli);
+        let config = config::Config::from(&cli);
         info!("`Config` generated from cli: {:?}", config);
 
         // Read configuration from configuration file
@@ -54,6 +62,23 @@ impl Executor {
             &validated_config.server_url
         );
 
-        // Mount FS
+        // Construct MegaFUSE
+        match cli.command {
+            Commands::Connect { target } => {
+                info!("Connecting to {} at remote", target);
+                let fs = MegaFUSE::from(target, mega_client);
+                // let bs = spawn_mount2(fs, validated_config.mount_point,
+                // &vec![MountOption::RO]);
+                mount2(
+                    fs,
+                    validated_config.mount_point,
+                    &vec![MountOption::RO, MountOption::FSName("MegaFUSE".to_string())],
+                )
+                .unwrap();
+            }
+            Commands::Disconnect { target } => {
+                info!("Disconnecting from {}", target);
+            }
+        }
     }
 }

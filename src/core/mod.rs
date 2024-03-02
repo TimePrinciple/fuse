@@ -2,24 +2,65 @@ mod inode;
 /// MegaClient used to dial and communicate with remote mega server
 pub mod mega_client;
 mod request;
-mod response;
 
 use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    borrow::BorrowMut,
+    collections::{HashMap, LinkedList},
+    fs::File,
+    mem::replace,
+    os::fd::AsRawFd,
+    sync::{
+        atomic::{AtomicU32, AtomicUsize, Ordering},
+        Mutex,
+    },
     time::{Duration, UNIX_EPOCH},
 };
 
-use fuser::{FileAttr, FileType, FUSE_ROOT_ID};
+use clap::error;
+use fuser::{consts::FOPEN_DIRECT_IO, FileAttr, FileType, FUSE_ROOT_ID};
 use libc::{ENOENT, ENONET};
-use tracing::info;
+use tokio::io::join;
+use tracing::{debug, error, info};
 
-use crate::core::mega_client::MegaClient;
+use crate::core::{
+    inode::{ContentType, Inode, InodeAttributes},
+    mega_client::MegaClient,
+};
+
+const TTL: Duration = Duration::from_secs(1); // 1 second
+const MAX_NAME_LENGTH: u32 = 255;
 
 /// Actually FUSE implementation
 pub struct MegaFUSE {
+    target_repo: String,
     mega_client: MegaClient,
-    // inodes: HashMap<usize, Inode>,
+    guard: Mutex<()>,
+    inodes: HashMap<u64, Inode>,
+}
+
+impl MegaFUSE {
+    /// Construct MegaFUSE using specified target repo and pre constructed
+    /// MegaClient
+    pub fn from(target_repo: String, mega_client: MegaClient) -> MegaFUSE {
+        MegaFUSE {
+            target_repo,
+            mega_client,
+            guard: Mutex::new(()),
+            inodes: HashMap::<u64, Inode>::new(),
+        }
+    }
+
+    /// lookup utility
+    pub fn lookup_name(&self, parent: u64, name: &str) -> Option<u64> {
+        let parent_inode = self.inodes.get(&parent).unwrap();
+        for ino in parent_inode.children_ino.iter() {
+            let inode = self.inodes.get(ino).unwrap();
+            if inode.attr.name.eq(name) {
+                return Some(*ino);
+            }
+        }
+        None
+    }
 }
 
 impl fuser::Filesystem for MegaFUSE {
@@ -30,79 +71,178 @@ impl fuser::Filesystem for MegaFUSE {
     ) -> Result<(), libc::c_int> {
         // Retrieve the basic `Tree` from the specified remote repository,
         // recursively initialize the directory
+        info!(
+            "Initialize filesystem of target {} repository",
+            &self.target_repo
+        );
+        let guard = self.guard.lock().unwrap();
+        self.inodes
+            .insert(FUSE_ROOT_ID, Inode::root_node(&self.target_repo));
+        // Used to iterate the objects level by level (request by request)
+        let mut queue = LinkedList::from([FUSE_ROOT_ID]);
+        while let Some(ino) = queue.pop_front() {
+            let inode = self.inodes.get_mut(&ino).unwrap();
+            let path = &inode.attr.path;
 
+            let objects = match ino {
+                // First time through, constructing basic tree
+                FUSE_ROOT_ID => self.mega_client.request_base_tree(&self.target_repo),
+                _ => {
+                    // Request sub-directories
+                    self.mega_client
+                        .request_sub_tree_with_id(&self.target_repo, &inode.attr.id)
+                }
+            };
+            let new_inodes: Vec<Inode> = objects
+                .data
+                .into_iter()
+                .map(|object| {
+                    // retrieve attributes from object
+                    let attr = InodeAttributes::from(object);
+                    let kind = attr.kind.clone();
+                    let new_inode = Inode::new(ino, attr);
+                    if kind == ContentType::Dir {
+                        queue.push_back(new_inode.ino);
+                    }
+                    inode.insert_child(new_inode.ino);
+                    new_inode
+                })
+                .collect();
+            new_inodes.into_iter().for_each(|inode| {
+                info!("Constructing {:?}", inode);
+                self.inodes.insert(inode.ino, inode);
+            });
+        }
+        drop(guard);
+        info!("File system init success.");
         // Request repo with `repo_name` specified to get the basic layout
         Ok(())
     }
-    // fn getattr(&mut self, _req: &fuser::Request<'_>, ino: u64, reply:
-    // fuser::ReplyAttr) {     info!("[getattr] called with ino: {}", ino);
-    //     match ino {
-    //         1 => reply.attr(&TTL, &SAMPLE_DIR_ATTR),
-    //         2 => reply.attr(&TTL, &SAMPLE_FILE_ATTR),
-    //         _ => reply.error(ENOENT),
-    //     }
-    // }
 
-    // fn readdir(
-    //     &mut self,
-    //     _req: &fuser::Request<'_>,
-    //     ino: u64,
-    //     _fh: u64,
-    //     offset: i64,
-    //     mut reply: fuser::ReplyDirectory,
-    // ) {
-    //     info!("[readdir] called with ino: {}, offset: {}", ino, offset);
-    //     if ino != 1 {
-    //         reply.error(ENOENT);
-    //         return;
-    //     }
+    fn getattr(&mut self, req: &fuser::Request<'_>, ino: u64, reply: fuser::ReplyAttr) {
+        match self.inodes.get(&ino) {
+            Some(inode) => {
+                debug!("getattr(file at inode: {})", ino);
+                reply.attr(&TTL, &inode.file_attr(req.uid(), req.gid()));
+            }
+            None => reply.error(ENOENT),
+        }
+    }
 
-    //     let entries = vec![
-    //         (1, FileType::Directory, "."),
-    //         (1, FileType::Directory, ".."),
-    //         (2, FileType::RegularFile, "sample-file"),
-    //     ];
+    fn readdir(
+        &mut self,
+        _req: &fuser::Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        mut reply: fuser::ReplyDirectory,
+    ) {
+        let inode = self.inodes.get(&ino).unwrap();
+        let mut entries = vec![
+            (ino, FileType::Directory, ".".to_owned()),
+            (ino, FileType::Directory, "..".to_owned()),
+        ];
+        let children: Vec<(u64, FileType, String)> = inode
+            .children_ino
+            .iter()
+            .map(|ino| self.inodes.get(ino).unwrap())
+            .map(|inode| {
+                (
+                    inode.ino,
+                    FileType::from(&inode.attr.kind),
+                    inode.attr.name.clone(),
+                )
+            })
+            .collect();
+        entries.extend(children);
 
-    //     for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-    //         if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
-    //             break;
-    //         }
-    //     }
-    //     reply.ok();
-    // }
+        for (index, (ino, kind, name)) in entries.into_iter().enumerate().skip(offset as usize) {
+            if reply.add(ino, (index + 1) as i64, kind, name) {
+                break;
+            }
+        }
+        reply.ok();
+    }
 
-    // fn lookup(
-    //     &mut self,
-    //     _req: &fuser::Request<'_>,
-    //     parent: u64,
-    //     name: &std::ffi::OsStr,
-    //     reply: fuser::ReplyEntry,
-    // ) {
-    //     info!("[lookup] called with parent: {}, name: {:?}", parent, name);
-    //     if parent == 1 && name.to_str() == Some("sample-file") {
-    //         reply.entry(&TTL, &SAMPLE_FILE_ATTR, 0);
-    //     } else {
-    //         reply.error(ENOENT);
-    //     }
-    // }
+    fn lookup(
+        &mut self,
+        req: &fuser::Request<'_>,
+        parent: u64,
+        name: &std::ffi::OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
+        if name.len() > MAX_NAME_LENGTH as usize {
+            reply.error(libc::ENAMETOOLONG);
+            return;
+        }
+        let name = name.to_str().unwrap().to_owned();
+        debug!("lookup({} at inode)", name);
+        match self.lookup_name(parent, &name) {
+            Some(ino) => {
+                let inode = self.inodes.get(&ino).unwrap();
+                reply.entry(&TTL, &inode.file_attr(req.uid(), req.gid()), 0)
+            }
+            None => reply.error(libc::ENOENT),
+        }
+    }
 
-    // fn read(
-    //     &mut self,
-    //     _req: &fuser::Request<'_>,
-    //     ino: u64,
-    //     _fh: u64,
-    //     offset: i64,
-    //     _size: u32,
-    //     _flags: i32,
-    //     _lock_owner: Option<u64>,
-    //     reply: fuser::ReplyData,
-    // ) {
-    //     if ino == 2 {
-    //         reply.data(&SAMPLE_FILE_CONTENT.as_bytes()[offset as usize..]);
-    //     } else {
-    //         reply.error(ENONET);
-    //     }
-    // }
+    fn open(&mut self, _req: &fuser::Request<'_>, ino: u64, _flags: i32, reply: fuser::ReplyOpen) {
+        let inode = self.inodes.get_mut(&ino).unwrap();
+        debug!("open({})", inode.attr.name);
+        // Instantiate the file at inode `ino`
+
+        let file_content = self
+            .mega_client
+            .request_file_content(&self.target_repo, &inode.attr.id);
+        inode.attr.size = file_content.len() as u64;
+        inode.content = Some(file_content);
+        debug!("{:?}", inode);
+
+        reply.opened(ino, FOPEN_DIRECT_IO);
+    }
+
+    fn flush(
+        &mut self,
+        _req: &fuser::Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        _lock_owner: u64,
+        reply: fuser::ReplyEmpty,
+    ) {
+        reply.ok()
+    }
+
+    fn read(
+        &mut self,
+        _req: &fuser::Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        flags: i32,
+        lock_owner: Option<u64>,
+        reply: fuser::ReplyData,
+    ) {
+        assert!(offset >= 0);
+        // if (fh & ino) != 0 {
+        //     reply.error(libc::EACCES);
+        //     return;
+        // }
+        // Instantiate the file at inode `ino`
+        let file_content = match self.inodes.get(&ino) {
+            Some(inode) => {
+                debug!("read({})", inode.attr.name);
+                inode.content.as_ref().unwrap()
+            }
+            None => {
+                reply.error(libc::ENOENT);
+                error!("content at inode: {} not found, aborting", ino);
+                return;
+            }
+        };
+
+        reply.data(file_content[offset as usize..].as_bytes());
+    }
 }
 
 #[cfg(test)]

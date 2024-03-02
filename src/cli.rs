@@ -26,11 +26,12 @@ pub struct Args {
     pub mega_port: Option<u16>,
     /// Operation to take
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 }
 
+/// Actual `Commands` for cli to execute
 #[derive(Subcommand, Debug, PartialEq)]
-enum Commands {
+pub enum Commands {
     /// connect to a specific repository
     Connect {
         /// Mandatory field

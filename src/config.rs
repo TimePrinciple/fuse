@@ -61,13 +61,13 @@ impl Config {
     }
 }
 
-impl From<Args> for Config {
-    fn from(args: Args) -> Self {
+impl From<&Args> for Config {
+    fn from(args: &Args) -> Self {
         Config {
-            mount_point: args.mount_point,
-            cache_dir: args.cache_dir,
-            log_dir: args.log_dir,
-            mega_host: args.mega_host,
+            mount_point: args.mount_point.clone(),
+            cache_dir: args.cache_dir.clone(),
+            log_dir: args.log_dir.clone(),
+            mega_host: args.mega_host.clone(),
             mega_port: args.mega_port,
         }
     }

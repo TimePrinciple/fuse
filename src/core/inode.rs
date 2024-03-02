@@ -1,8 +1,8 @@
 use std::{
-    fs::File,
+    convert::From,
     path::PathBuf,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use fuser::{FileAttr, FileType, FUSE_ROOT_ID};
@@ -12,21 +12,22 @@ const BLOCK_SIZE: u32 = 4096;
 const RDEV: u32 = 0;
 const FLAGS: u32 = 0;
 const DEFAULT_HARD_LINKS: u32 = 1;
-const DEFAULT_PERMISSIONS: u16 = 600;
-static GID: AtomicU32 = AtomicU32::new(1000);
-static UID: AtomicU32 = AtomicU32::new(1000);
-pub fn init_gu_id(gid: u32, uid: u32) {
-    GID.store(gid, std::sync::atomic::Ordering::SeqCst);
-    UID.store(uid, std::sync::atomic::Ordering::SeqCst);
-}
+const DEFAULT_FILE_PERMISSIONS: u16 = 0o644;
+const DEFAULT_DIR_PERMISSIONS: u16 = 0o755;
+// static GID: AtomicU32 = AtomicU32::new(1000);
+// static UID: AtomicU32 = AtomicU32::new(1000);
+// pub fn init_gu_id(gid: u32, uid: u32) {
+//     GID.store(gid, std::sync::atomic::Ordering::SeqCst);
+//     UID.store(uid, std::sync::atomic::Ordering::SeqCst);
+// }
 
-pub fn gid() -> u32 {
-    GID.load(std::sync::atomic::Ordering::Acquire)
-}
+// pub fn gid() -> u32 {
+//     GID.load(std::sync::atomic::Ordering::Acquire)
+// }
 
-pub fn uid() -> u32 {
-    UID.load(std::sync::atomic::Ordering::Acquire)
-}
+// pub fn uid() -> u32 {
+//     UID.load(std::sync::atomic::Ordering::Acquire)
+// }
 
 #[derive(Debug, Deserialize)]
 pub struct Object {
@@ -34,35 +35,49 @@ pub struct Object {
     name: String,
     path: PathBuf,
     content_type: ContentType,
+    commit_date: String,
+    // Field below are ignored for now
     under_repo: bool,
     commit_msg: String,
-    commit_date: String,
     commit_id: String,
 }
 
-#[derive(Debug, Deserialize)]
-enum ContentType {
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub enum ContentType {
     #[serde(rename(deserialize = "file"))]
     File,
     #[serde(rename(deserialize = "directory"))]
     Dir,
 }
 
-#[derive(Debug, Deserialize)]
-struct Objects {
-    #[serde(rename(deserialize = "items"))]
-    data: Vec<Objects>,
+impl From<&ContentType> for FileType {
+    fn from(content_type: &ContentType) -> Self {
+        match content_type {
+            ContentType::Dir => FileType::Directory,
+            ContentType::File => FileType::RegularFile,
+        }
+    }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct Objects {
+    #[serde(rename(deserialize = "items"))]
+    pub data: Vec<Object>,
+}
+
 static INO_ALLOCATOR: AtomicU64 = AtomicU64::new(FUSE_ROOT_ID + 1);
 
 fn alloc_ino() -> u64 {
     INO_ALLOCATOR.fetch_add(1, Ordering::SeqCst)
 }
+
+#[derive(Debug)]
 pub struct Inode {
     pub ino: u64,
     pub parent_ino: u64,
     pub children_ino: Vec<u64>,
     pub attr: InodeAttributes,
+    pub content: Option<String>,
 }
 
 impl Inode {
@@ -73,6 +88,7 @@ impl Inode {
             parent_ino,
             children_ino: Vec::new(),
             attr,
+            content: None,
         }
     }
 
@@ -90,7 +106,7 @@ impl Inode {
         self.children_ino.remove(index);
     }
 
-    pub fn file_attr(&self) -> FileAttr {
+    pub fn file_attr(&self, uid: u32, gid: u32) -> FileAttr {
         let attrs = &self.attr;
         FileAttr {
             ino: self.ino,
@@ -100,11 +116,14 @@ impl Inode {
             mtime: attrs.mtime,
             ctime: attrs.ctime,
             crtime: attrs.ctime,
-            kind: attrs.kind.into(),
+            kind: match attrs.kind {
+                ContentType::Dir => FileType::Directory,
+                ContentType::File => FileType::RegularFile,
+            },
             perm: attrs.permissions,
             nlink: DEFAULT_HARD_LINKS,
-            uid: uid(),
-            gid: gid(),
+            uid,
+            gid,
             rdev: RDEV,
             blksize: BLOCK_SIZE,
             flags: FLAGS,
@@ -116,29 +135,61 @@ impl Inode {
             size: BLOCK_SIZE as u64,
             name: fs_name.to_string(),
             path: "".to_owned(),
-            kind: FileType::Directory,
+            kind: ContentType::Dir,
             mtime: SystemTime::now(),
             ctime: SystemTime::now(),
-            permissions: DEFAULT_PERMISSIONS,
+            permissions: DEFAULT_DIR_PERMISSIONS,
         };
         Inode {
             ino: FUSE_ROOT_ID,
             parent_ino: FUSE_ROOT_ID,
             children_ino: Vec::new(),
             attr,
+            content: None,
         }
     }
 }
 
+#[derive(Debug)]
 pub struct InodeAttributes {
     pub id: String,
     pub size: u64,
     pub name: String,
-    pub kind: FileType,
+    pub kind: ContentType,
     pub path: String,
     pub mtime: SystemTime,
     pub ctime: SystemTime,
     pub permissions: u16,
+}
+
+impl From<Object> for InodeAttributes {
+    fn from(object: Object) -> Self {
+        let secs = Duration::from_secs(object.commit_date.parse().unwrap());
+        let mtime = SystemTime::UNIX_EPOCH.checked_add(secs).unwrap();
+        let ctime = SystemTime::UNIX_EPOCH.checked_add(secs).unwrap();
+        let permissions = match object.content_type {
+            ContentType::Dir => DEFAULT_DIR_PERMISSIONS,
+            ContentType::File => DEFAULT_FILE_PERMISSIONS,
+        };
+        Self {
+            kind: object.content_type,
+            id: object.id,
+            size: 0,
+            name: object.name,
+            path: object
+                .path
+                .components()
+                // Skip the `/project` prefix
+                .skip(2)
+                .collect::<PathBuf>()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            mtime,
+            ctime,
+            permissions,
+        }
+    }
 }
 
 #[cfg(test)]

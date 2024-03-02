@@ -1,12 +1,15 @@
-use std::{str, sync::Arc};
+use std::{path::PathBuf, str, sync::Arc};
 
 use anyhow::Result;
 use bytes::Bytes;
+use fuser::ReplyOpen;
 use http_body_util::{BodyExt, Empty};
 use hyper::{client::conn::http1::SendRequest, Request};
 use hyper_util::rt::TokioIo;
 use tokio::{net::TcpStream, runtime, runtime::Runtime};
+use tracing::info;
 
+use super::inode::Objects;
 use crate::config::ValidatedConfig;
 
 /// MegaClient is used to handling connection details.
@@ -43,6 +46,7 @@ impl MegaClient {
                 println!("Connection failed: {:?}", err);
             }
         });
+
         Ok(MegaClient { rt, sender })
     }
     /// Creates a MegaClient from a given runtime. The reason it exists instead
@@ -89,6 +93,46 @@ impl MegaClient {
 
         Ok(output)
     }
+
+    fn form_request_to(target: &str) -> Request<Empty<Bytes>> {
+        Request::builder()
+            .method("GET")
+            .uri(target)
+            .body(Empty::<Bytes>::new())
+            .unwrap()
+    }
+
+    /// Send request with dedicated API and repo_path
+    pub fn request_base_tree(&mut self, target: &str) -> Objects {
+        let target = format!("/api/v1/tree?repo_path=/projects/{}", target);
+        let req = Self::form_request_to(&target);
+        info!("Sending request to retrieve directory: {:?}", req);
+        let response = self.request(req).unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    /// Send request with dedicated API, object_id and repo_path
+    pub fn request_sub_tree_with_id(&mut self, target: &str, id: &str) -> Objects {
+        let target = format!(
+            "/api/v1/tree?object_id={}&repo_path=/projects/{}",
+            id, target
+        );
+        let req = Self::form_request_to(&target);
+        info!("Sending request to retrieve directory: {:?}", req);
+        let response = self.request(req).unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    /// Retrieve actual file content
+    pub fn request_file_content(&mut self, target: &str, id: &str) -> String {
+        let target = format!(
+            "/api/v1/object?object_id={}&repo_path=/projects/{}",
+            id, target
+        );
+        let req = Self::form_request_to(&target);
+        info!("Sending request to retrieve file content: {:?}", req);
+        self.request(req).unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -127,33 +171,26 @@ mod tests {
         MegaClient::from_customized_runtime(Arc::new(rt), &config).unwrap()
     }
 
-    fn form_request_to(target: &str) -> Request<Empty<Bytes>> {
-        Request::builder()
-            .method("GET")
-            .uri(target)
-            .body(Empty::<Bytes>::new())
-            .unwrap()
-    }
-
     /// This test requires a working mega server
     #[test]
     fn test_mage_client_make_request() {
         let mut mc = create_mega_client();
 
-        let req = form_request_to("/api/v1/tree?repo_path=/projects/fuser");
+        let req = MegaClient::form_request_to("/api/v1/tree?repo_path=/projects/fuser");
         let output = mc.request(req).unwrap();
         dbg!(output);
 
-        let req = form_request_to("/api/v1/tree?repo_path=/projects/mega");
+        let req = MegaClient::form_request_to("/api/v1/tree?repo_path=/projects/mega");
         let output = mc.request(req).unwrap();
         dbg!(output);
 
-        let req = form_request_to("/api/v1/object?object_id=8452eaa54f8482f9b36a70326393d169df654c28&repo_path=/projects/mega");
+        let req = MegaClient::form_request_to("/api/v1/object?object_id=8452eaa54f8482f9b36a70326393d169df654c28&repo_path=/projects/mega");
         let output = mc.request(req).unwrap();
         dbg!(output);
 
-        let req =
-            form_request_to("/api/v1/blob?object_id=8452eaa54f8482f9b36a70326393d169df654c28");
+        let req = MegaClient::form_request_to(
+            "/api/v1/blob?object_id=8452eaa54f8482f9b36a70326393d169df654c28",
+        );
         let output = mc.request(req).unwrap();
         dbg!(output);
     }
